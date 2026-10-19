@@ -5,11 +5,18 @@
   - Лист: Согласованная Смета
   - A = № п/п, B = № раздела, C = Кодификатор (записываем сюда), D = Наименование
 
-Алгоритм (v3):
+Алгоритм (v4, правила v2.0):
   1. keyword rules с SMR-контекстом родительского раздела (column B)
-  2. Exact match по 12 примерам
+  2. Exact match по примерам
   3. Fuzzy match (порог 85) с фильтром по SMR-домену
   4. Наследование SMR-кода родительского раздела из иерархии column B
+
+  Изменения v4 (2026-05-05):
+  - Раздел 19 убран: реставрация → 6.8/6.9/7.4/8.5/8.3.2-8.3.4
+  - Раздел 2: БНС(несущие) → 2.1, БСС(ограждение)/шпунт → 2.4
+  - Добавлен 8.5 (реставрация внутренняя)
+  - Добавлены разделы 15, 17, 20
+  - Наружное освещение: 11.11 vs 12.99 по контексту предка
 """
 import sys, re, os, argparse, openpyxl
 from fuzzywuzzy import fuzz, process
@@ -53,6 +60,42 @@ def contains(name_n, *keywords):
 def word_in(name_n, word):
     """Проверяет наличие слова/аббревиатуры как отдельного токена (не как подстроку)."""
     return bool(re.search(r'(?<![а-яёa-z0-9])' + re.escape(word) + r'(?![а-яёa-z0-9])', name_n))
+
+
+# ── Фильтр нулевых строк по столбцу стоимости ──────────────────────────────
+
+COST_HEADERS = ["всего", "итого", "стоимость", "сумма", "общая стоимость"]
+
+
+def norm_header(text):
+    """Нормализует заголовок: строчные буквы, переносы строк → пробел."""
+    if text is None:
+        return ""
+    return re.sub(r'\s+', ' ', str(text)).strip().lower()
+
+
+def find_cost_col(ws):
+    """Ищет 0-based индекс первого столбца стоимости по заголовку в первых 3 строках.
+    Возвращает None если подходящий заголовок не найден."""
+    for row in ws.iter_rows(min_row=1, max_row=3, values_only=True):
+        for j, cell in enumerate(row):
+            h = norm_header(cell)
+            if h and any(kw in h for kw in COST_HEADERS):
+                return j
+    return None
+
+
+def is_zero_cost(val):
+    """True если стоимость строки = пусто / прочерк / 0."""
+    if val is None:
+        return True
+    s = str(val).strip()
+    if not s or s in ("-", "–", "—"):
+        return True
+    try:
+        return float(s.replace(",", ".").replace(" ", "").replace("\xa0", "")) == 0.0
+    except (ValueError, TypeError):
+        return False
 
 
 def smr_top(smr_code):
@@ -144,18 +187,67 @@ def map_code(name_orig, smr_ctx_code=""):
     n = norm(name_orig)
     ctx = smr_top(smr_ctx_code)
 
-    # ── РАЗДЕЛ 19: Реставрация (высший приоритет) ─────────────────────────────
-    if contains(n, "реставрац", "воссоздани", "вычинка", "инъектировани", "инъецировани"):
-        if contains(n, "фасад", "кладк", "лепнин"):
-            return "19.1."
-        if contains(n, "окно", "витраж", "двер"):
-            return "19.2."
-        if contains(n, "кровля"):
-            return "19.3."
-        if contains(n, "интерьер", "внутренн", "стена", "свод", "паркет",
-                    "монолитн", "фундамент", "гидроизол", "молниезащ", "подземн"):
-            return "19.4."
-        return "19.5."
+    # ── РЕСТАВРАЦИЯ: высший приоритет (раздел 19 убран, коды по типу работ) ──
+    _is_restav = contains(n, "реставрац", "воссоздани", "вычинка",
+                           "инъектировани", "инъецировани",
+                           "расчистка историческ")
+    if _is_restav:
+        if contains(n, "кровля", "кровли"):
+            if contains(n, "демонтаж"):
+                return "7.4.1."
+            if contains(n, "воссоздани"):
+                return "7.4.2."
+            if contains(n, "элемент"):
+                return "7.4.3."
+            if contains(n, "фронтон"):
+                return "7.4.6."
+            return "7.4."
+        if contains(n, "окно", "витраж"):
+            if contains(n, "демонтаж"):
+                return "6.9.1."
+            if contains(n, "воссоздани", "монтаж"):
+                return "6.9.3."
+            return "6.9."
+        if contains(n, "двер"):
+            if contains(n, "воссоздани", "монтаж"):
+                return "8.3.3."
+            return "8.3.2."
+        if contains(n, "ворот"):
+            return "8.3.4."
+        if contains(n, "фасад", "кладк", "лепнин", "кирпич", "штукатурн"):
+            if contains(n, "демонтаж"):
+                return "6.8.1."
+            if contains(n, "кладка", "кладк"):
+                return "6.8.3."
+            if contains(n, "штукатурн"):
+                return "6.8.4."
+            if contains(n, "декоратив", "лепнин"):
+                return "6.8.5."
+            if contains(n, "крылец", "крыльц"):
+                return "6.8.6."
+            if contains(n, "навес"):
+                return "6.8.7."
+            if contains(n, "ограждени", "перил"):
+                return "6.8.8."
+            return "6.8."
+        if contains(n, "интерьер", "внутренн", "потолок", "пол", "стена", "свод",
+                    "паркет", "лестниц"):
+            if contains(n, "демонтаж"):
+                return "8.5.1."
+            if contains(n, "усилени"):
+                return "8.5.2."
+            if contains(n, "декоратив"):
+                return "8.5.5."
+            if contains(n, "потолок"):
+                return "8.5.6."
+            if contains(n, "пол"):
+                return "8.5.7."
+            if contains(n, "стена"):
+                return "8.5.8."
+            if contains(n, "лестниц"):
+                return "8.5.10."
+            return "8.5."
+        return "6.8.99."
 
     # ── РАЗДЕЛ 16: РД / 18: Наружные сети ────────────────────────────────────
     if contains(n, "рабочая документация", "авторский надзор",
@@ -230,12 +322,16 @@ def map_code(name_orig, smr_ctx_code=""):
         return "1.99."
 
     # ── РАЗДЕЛ 2: Котлован ────────────────────────────────────────────────────
-    if contains(n, "ограждение котлован", "стена в грунте", "свг",
-                "форшахта", "ограждающих конструкц котлован"):
+    # БНС (несущие буровые сваи) → 2.1; БСС / шпунт / стена в грунте → 2.4
+    if contains(n, "буросекущ", "бсс", "шпунт", "стена в грунте", "свг",
+                "ограждение котлован", "ограждающих конструкц котлован"):
+        return "2.4."
+    if contains(n, "буронабивн", "бнс", "свайное основани", "устройство свай",
+                "форшахта") and not contains(n, "ограждени"):
         return "2.1."
     if contains(n, "срез оголовк", "срубка оголовк"):
         return "2.2."
-    if contains(n, "распорная система", "шпунт", "извлечение шпунта"):
+    if contains(n, "распорная система", "извлечение шпунта"):
         return "2.3."
     if contains(n, "строительное водопонижени", "верхностный водоотлив",
                 "строительный водоотли"):
@@ -246,8 +342,6 @@ def map_code(name_orig, smr_ctx_code=""):
         if ctx == "12":
             return "12.1."
         return "2.6."
-    if contains(n, "бнс", "буронабивн"):
-        return "2.99."
     if contains(n, "котлован"):
         return "2."
     if contains(n, "демонтаж перекрытия в канале", "демонтаж бсс",
@@ -497,6 +591,9 @@ def map_code(name_orig, smr_ctx_code=""):
             return "11.6.1."
         return "11.6."
     if contains(n, "наружное освещени", "опоры освещени"):
+        # Если контекст B-предка — благоустройство → 12.99, иначе → 11.11
+        if smr_ctx_code.startswith("12"):
+            return "12.99."
         return "11.11."
     if contains(n, "фасадное освещени"):
         return "11.12."
@@ -536,6 +633,28 @@ def map_code(name_orig, smr_ctx_code=""):
         return "14."
     if contains(n, "умная"):
         return "11.9."
+
+    # ── РАЗДЕЛ 15: MR Ready ──────────────────────────────────────────────────
+    if contains(n, "mr ready", "mrready"):
+        return "15."
+    if contains(n, "чистовая отделка квартир", "финишная отделка квартир"):
+        return "15."
+    if contains(n, "меблировка", "меблировани"):
+        return "15.2."
+    if contains(n, "сантехника квартир", "сантехнические приборы квартир"):
+        return "15.3."
+    if contains(n, "кухонное оборудование квартир", "встроенная техника"):
+        return "15.4."
+
+    # ── РАЗДЕЛ 17: Офис продаж ───────────────────────────────────────────────
+    if contains(n, "офис продаж", "офиса продаж"):
+        return "17."
+    if contains(n, "шоурум", "showroom"):
+        return "17."
+
+    # ── РАЗДЕЛ 20: MR Shell & Core ───────────────────────────────────────────
+    if contains(n, "mr shell", "shell & core", "shell&core", "shell and core"):
+        return "20."
 
     # ── Общие заголовки разделов ──────────────────────────────────────────────
     if contains(n, "механические инженерные системы"):
@@ -622,17 +741,26 @@ def main():
     wb = openpyxl.load_workbook(INPUT_FILE)
     ws = wb.active
 
+    # Ищем столбец стоимости
+    cost_col_idx = find_cost_col(ws)
+    if cost_col_idx is not None:
+        print(f"  Столбец стоимости: {openpyxl.utils.get_column_letter(cost_col_idx + 1)}")
+    else:
+        print("  Столбец стоимости: не найден (фильтр по нулям отключён)")
+
     # Собираем все строки
     rows_data = []
     for i, row in enumerate(ws.iter_rows(min_row=2, values_only=False), start=2):
         if len(row) < 4:
             continue
+        cost_val = row[cost_col_idx].value if (cost_col_idx is not None and cost_col_idx < len(row)) else None
         rows_data.append({
             "excel_row": i,
             "section_b": str(row[1].value).strip() if row[1].value is not None else None,
             "cell_c": row[2],
             "code_c": str(row[2].value).strip() if row[2].value is not None else None,
             "name_d": row[3].value if row[3].value is not None else None,
+            "cost_val": cost_val,
         })
 
     # ── ФАЗА 1: Назначаем SMR-коды строкам-разделам (с B value) ─────────────
@@ -679,6 +807,7 @@ def main():
     filled = 0
     already = 0
     inherited = 0
+    skipped_zero = 0
     manual = []
 
     current_b = None   # последний встреченный B-раздел
@@ -695,6 +824,14 @@ def main():
             continue
         if not name_d:
             continue
+
+        # ── ФИЛЬТР НУЛЕВОЙ СТОИМОСТИ ─────────────────────────────────────────
+        # Пропускаем строки с нулевой/пустой стоимостью — код не нужен
+        # Исключение: строки с непустым B (заголовки разделов) всегда обрабатываем
+        if cost_col_idx is not None and not rd["section_b"]:
+            if is_zero_cost(rd["cost_val"]):
+                skipped_zero += 1
+                continue
 
         name_n = norm(name_d)
 
@@ -780,6 +917,7 @@ def main():
     print(f"    Keyword/exact/fuzzy:      {filled - inherited}")
     print(f"    По наследованию раздела:  {inherited}")
     print(f"    Итого проставлено:        {filled}")
+    print(f"    Пропущено (нулевая $):    {skipped_zero}")
     print(f"    Осталось пустых:          {len(manual)}")
 
     wb.save(OUTPUT_FILE)
